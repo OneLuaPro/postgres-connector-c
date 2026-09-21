@@ -21,31 +21,36 @@
 # SOFTWARE.
 
 cmake_minimum_required(VERSION 3.15)
-project(postgres-connector-c C)
+project(postgres-connector-c
+  VERSION 18.6	# this is the corresponding Postgres version
+  LANGUAGES C)
 
-# --- Add your cmake subdirectory to the module search path ---
+# Check for BUILDROOT path
+if(DEFINED BUILDROOT AND NOT BUILDROOT STREQUAL "")
+  message(STATUS "BUILDROOT_DIR set to ${BUILDROOT}")
+else()
+  message(FATAL_ERROR "BUILDROOT not set on command line.")
+endif()
+
+# Add cmake subdirectory to the module search path ---
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-# --- Include your custom utility module ---
+# Include custom utility module ---
 include(PostgresUtils)
 
-# Set C99 standard (required for PCRE2 and some sqlean modules)
+# Set C99 standard
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_VERBOSE_MAKEFILE ON)
 if(MSVC)
-  # # /wd4244: Conversion from 'type1' to 'type2', possible loss of data
-  # # /wd4267: Conversion from 'size_t' to 'type', possible loss of data
-  # add_compile_options(/W3 /wd4068 /wd4244 /wd4267)
   if(CMAKE_C_COMPILER_ID MATCHES "IntelLLVM")
     add_compile_options(
       -Wno-deprecated-declarations
       -Wno-inconsistent-dllimport
-      # -Wno-unused-variable
-      # -Wno-unused-but-set-variable
-      # -Wno-unused-function
     )
   endif()
 endif()
+
+# Set GNU-alike paths
 include (GNUInstallDirs)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
@@ -63,15 +68,12 @@ set(INSTALL_MANDIR
 set(INSTALL_DATAROOTDIR
   ${CMAKE_INSTALL_DATAROOTDIR} CACHE PATH "Installation directory for data")
 
-# --- 1. Versioning & Variables ---
-set(POSTGRES_RELEASE "18.6")
-string(REPLACE "." ";" VERSION_LIST ${POSTGRES_RELEASE})
-list(GET VERSION_LIST 0 MAJOR_VER)
-list(GET VERSION_LIST 1 MINOR_VER)
 # Calculate numeric version: (MAJOR * 10000) + MINOR
-math(EXPR CALCULATED_PG_VERSION_NUM "(${MAJOR_VER} * 10000) + ${MINOR_VER}")
+math(EXPR CALCULATED_PG_VERSION_NUM "(${PROJECT_VERSION_MAJOR} * 10000) + ${PROJECT_VERSION_MINOR}")
 
-# --- 2. Variablen fuer pg_config.h definieren ---
+# Define Variables for pg_config.h. Use PREFIX to be able to distinguish
+# between normal CMake variables and variables to be used in the pg_config.h
+# configure process.
 set(PREFIX "PG_CONN_")
 
 # Feature flags (1 enables the option in the Autotools template)
@@ -86,17 +88,20 @@ set(${PREFIX}STDC_HEADERS 1)
 set(${PREFIX}USE_OPENSSL 1)
 set(${PREFIX}HAVE_LIBCRYPTO 1)
 set(${PREFIX}HAVE_LIBSSL 1)
+#set(${PREFIX}HAVE_LIBZSTD 1)
+#set(${PREFIX}USE_ZSTD 1)
+#set(${PREFIX}USE_LIBCURL 1)
 set(${PREFIX}HAVE_LONG_INT 1)
 set(${PREFIX}HAVE_LONG_LONG_INT 1)
 set(${PREFIX}HAVE_INT64_TIMESTAMP 1)
-
+#
 # Core block sizes and modifiers
 set(${PREFIX}BLCKSZ 8192)
 set(${PREFIX}XLOG_BLCKSZ 8192)
 set(${PREFIX}RELSEG_SIZE 131072)
 set(${PREFIX}INT64_MODIFIER "\"ll\"")
 set(${PREFIX}MEMSET_LOOP_LIMIT 1024)
-
+#
 # Target type sizes for x64 Windows
 set(${PREFIX}SIZEOF_SIZE_T 8)
 set(${PREFIX}SIZEOF_VOID_P 8)
@@ -104,49 +109,51 @@ set(${PREFIX}SIZEOF_LONG_LONG 8)
 set(${PREFIX}SIZEOF_LONG 4)
 set(${PREFIX}SIZEOF_INT 4)
 set(${PREFIX}MAXIMUM_ALIGNOF 8)
-
+#
 # Package metadata
 set(${PREFIX}PG_VERSION_NUM ${CALCULATED_PG_VERSION_NUM})
-set(${PREFIX}PACKAGE_VERSION "\"${POSTGRES_RELEASE}\"")
-set(${PREFIX}PG_VERSION "\"${POSTGRES_RELEASE}\"")
-set(${PREFIX}PG_MAJORVERSION "\"${MAJOR_VER}\"")
+set(${PREFIX}PACKAGE_VERSION "\"${PROJECT_VERSION}\"")
+set(${PREFIX}PG_VERSION "\"${PROJECT_VERSION}\"")
+set(${PREFIX}PG_MAJORVERSION "\"${PROJECT_VERSION_MAJOR}\"")
+set(${PREFIX}PG_MINORVERSION "\"${PROJECT_VERSION_MINOR}\"")
 set(${PREFIX}PG_KRB_SRVNAM "\"postgres\"")
 set(${PREFIX}DEF_PGPORT 5432)
 set(${PREFIX}DEF_PGPORT_STR "\"5432\"")
-
+#
 # Map PostgreSQL's custom macro directly to the C99 language keyword
 set(${PREFIX}pg_restrict "restrict")
-
-# Add this to your variable block (Step 1) in the main project to disable server-side OAuth in client
+#
+# Disable server-side OAuth in client
 set(${PREFIX}HAVE_OAUTH 0)
 
-# --- 3. Downloads via FetchContent ---
+# Download postgres via FetchContent
 include(FetchContent)
 FetchContent_Declare(
   postgres_source 
-  URL "https://ftp.postgresql.org/pub/source/v${POSTGRES_RELEASE}/postgresql-${POSTGRES_RELEASE}.tar.gz"
+  URL "https://ftp.postgresql.org/pub/source/v${PROJECT_VERSION}/postgresql-${PROJECT_VERSION}.tar.gz"
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
-message(STATUS "Fetching postgresql-${POSTGRES_RELEASE}.tar.gz ...")
+message(STATUS "Fetching postgresql-${PROJECT_VERSION}.tar.gz ...")
 FetchContent_MakeAvailable(postgres_source)
 
-# --- 4. File Distribution (Setup internal structure) ---
+# Data Distribution (Setup internal structure)
 FetchContent_GetProperties(postgres_source SOURCE_DIR POSTGRES_DIR)
 
-
-
+# Read pg_config.in template
 file(READ "${POSTGRES_DIR}/src/include/pg_config.h.in" TEMPLATE_CONTENT)
 
 # Retrieve all currently defined CMake variables
 get_cmake_property(ALL_VARIABLES VARIABLES)
 
+# Iterate over TEMPLATE_CONTENT and replace above mentioned variables with PREFIX
+# from #undef... to #cmakedefine..., such that configure_file() can work on it.
 foreach(VAR_NAME ${ALL_VARIABLES})
   if(VAR_NAME MATCHES "^${PREFIX}(.+)$")
     set(REAL_VAR "${CMAKE_MATCH_1}") # Extract core variable name (e.g., BLCKSZ)
-
+    #
     # Mirror the prefixed value to a standard variable for configure_file() access
     set(${REAL_VAR} "${${VAR_NAME}}")
-
+    #
     # Robust regex replacement: handles optional preceding newline (?:\r?\n) 
     # and trailing whitespaces/newlines to prevent false-positive matches in comments
     string(REGEX REPLACE 
@@ -158,17 +165,17 @@ foreach(VAR_NAME ${ALL_VARIABLES})
   endif()
 endforeach()
 
-
+# Write temporary (modified, CMake-ready) pg_config.h.in template to file
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/pg_config.h.cmake.in" "${TEMPLATE_CONTENT}")
 
-
+# Configure (modified, CMake-ready) pg_config.h.cmake.in template
 configure_file(
   "${CMAKE_CURRENT_BINARY_DIR}/pg_config.h.cmake.in"
   "${CMAKE_CURRENT_BINARY_DIR}/pg_config.h"
   @ONLY
 )
 
-# Diese Hilfs-Header bleiben als minimale Dummys bestehen
+# Create minimum Dummy headers
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/pg_config_ext.h
   "#ifndef PG_CONFIG_EXT_H\n#define PG_CONFIG_EXT_H\n#define PG_INT64_TYPE long long\n#endif\n"
 )
@@ -190,17 +197,16 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/pg_config_os.h
   "#include \"port/win32.h\"\n"
 )
 
-# --- Generate the real utils/errcodes.h using the included function ---
+# Generate the real utils/errcodes.h using selfmade cmake function instead of
+# perl-script as done in postgres
 set(ERRCODES_TXT "${POSTGRES_DIR}/src/backend/utils/errcodes.txt")
 set(ERRCODES_H   "${CMAKE_CURRENT_BINARY_DIR}/utils/errcodes.h")
-
 # Ensure the output subdirectory exists within the build tree
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/utils")
-
 # Execute the isolated function
 generate_postgres_errcodes("${ERRCODES_TXT}" "${ERRCODES_H}")
 
-# --- set core sources
+# set core sources
 set(LIBPQ_SOURCES
   ${POSTGRES_DIR}/src/interfaces/libpq/fe-auth.c
   ${POSTGRES_DIR}/src/interfaces/libpq/fe-connect.c
@@ -219,7 +225,7 @@ set(LIBPQ_SOURCES
   ${POSTGRES_DIR}/src/interfaces/libpq/fe-cancel.c
   ${POSTGRES_DIR}/src/interfaces/libpq/pthread-win32.c
   ${POSTGRES_DIR}/src/interfaces/libpq/win32.c
-
+  #
   # WIN32-specific / Portability layer aus src/common
   ${POSTGRES_DIR}/src/common/string.c
   ${POSTGRES_DIR}/src/common/link-canary.c
@@ -240,7 +246,7 @@ set(LIBPQ_SOURCES
   ${POSTGRES_DIR}/src/common/stringinfo.c
   ${POSTGRES_DIR}/src/common/unicode_norm.c
   ${POSTGRES_DIR}/src/common/psprintf.c
-
+  #
   # WIN32-specific / Portability layer aus src/port
   ${POSTGRES_DIR}/src/port/path.c
   ${POSTGRES_DIR}/src/port/pgstrcasecmp.c
@@ -269,10 +275,11 @@ set(LIBPQ_SOURCES
   ${POSTGRES_DIR}/src/port/dirmod.c
 )
 
+# Define static library
 add_library(pq STATIC ${LIBPQ_SOURCES})
 
 target_include_directories(pq PRIVATE
-  ${LUA_HINTS}/include
+  ${BUILDROOT}/include
   ${POSTGRES_DIR}/src/include/port/win32
   ${POSTGRES_DIR}/src/include/port/win32_msvc
   ${POSTGRES_DIR}/src/port
@@ -285,20 +292,17 @@ target_include_directories(pq PUBLIC
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-# 'WIN32' aktiviert Windows-Sockets; 'NOT_USED' deaktiviert SSL (fuer minimale Abhaengigkeiten)
 target_compile_definitions(pq PRIVATE
   WIN32
   _WINDOWS
   FD_SETSIZE=1024
   _CRT_SECURE_NO_WARNINGS
-  #_WINSOCK_DEPRECATED_NO_WARNINGS
   FRONTEND
-  #WIN32_ONLY_COMPILER
 )
 
 target_link_libraries(pq INTERFACE
-  ${LUA_HINTS}/lib/ssl.lib
-  ${LUA_HINTS}/lib/crypto.lib
+  ${BUILDROOT}/lib/ssl.lib
+  ${BUILDROOT}/lib/crypto.lib
   ws2_32
   secur32
   advapi32
