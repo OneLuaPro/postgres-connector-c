@@ -139,6 +139,36 @@ FetchContent_MakeAvailable(postgres_source)
 # Data Distribution (Setup internal structure)
 FetchContent_GetProperties(postgres_source SOURCE_DIR POSTGRES_DIR)
 
+# OneLuaPro patch (libpq error message, Windows 7), the path is passed in by the
+# superbuild. The extracted sources have no .git but lie inside the superbuild
+# repository, where git apply would skip the patch and still exit with 0.
+# A repository of their own avoids that.
+if(POSTGRES_PATCH)
+  find_package(Git REQUIRED)
+  execute_process(COMMAND ${GIT_EXECUTABLE} init -q
+    WORKING_DIRECTORY "${POSTGRES_DIR}")
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} apply -p1 --ignore-whitespace --reverse --check
+    "${POSTGRES_PATCH}"
+    WORKING_DIRECTORY "${POSTGRES_DIR}"
+    RESULT_VARIABLE PG_APPLIED OUTPUT_QUIET ERROR_QUIET)
+  if(PG_APPLIED EQUAL 0)
+    message(STATUS "OneLuaPro patch already applied")
+  else()
+    execute_process(
+      COMMAND ${GIT_EXECUTABLE} apply -p1 --ignore-whitespace --whitespace=nowarn
+      "${POSTGRES_PATCH}"
+      WORKING_DIRECTORY "${POSTGRES_DIR}"
+      RESULT_VARIABLE PG_RESULT)
+    if(NOT PG_RESULT EQUAL 0)
+      message(FATAL_ERROR "Failed to apply ${POSTGRES_PATCH} to ${POSTGRES_DIR}")
+    endif()
+    message(STATUS "Applied ${POSTGRES_PATCH}")
+  endif()
+else()
+  message(STATUS "POSTGRES_PATCH not set: building without the OneLuaPro patch")
+endif()
+
 # Read pg_config.in template
 file(READ "${POSTGRES_DIR}/src/include/pg_config.h.in" TEMPLATE_CONTENT)
 
